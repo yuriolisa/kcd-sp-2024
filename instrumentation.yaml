@@ -1,0 +1,21 @@
+apiVersion: opentelemetry.io/v1alpha1
+kind: Instrumentation
+metadata:
+  name: kcdsp
+  namespace: kcdsp
+spec:
+  exporter:
+    endpoint: http://otel-collector.kcdsp.svc.cluster.local:4317
+  propagators:
+    - tracecontext
+    - baggage
+    - b3
+  sampler:
+    type: parentbased_traceidratio
+    argument: "1"
+  resource:
+    addK8sUIDAttributes: false
+  nodejs:
+    env:
+      - name: OTEL_EXPORTER_OTLP_ENDPOINT
+        value: http://otel-collector.kcdsp.svc.cluster.local:4317

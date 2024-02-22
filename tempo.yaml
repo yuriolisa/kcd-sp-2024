@@ -1,0 +1,252 @@
+# send everything to http://otel-collector.kcdsp.svc.cluster.local:4317
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kcdsp
+---
+apiVersion: v1
+data:
+  overrides.yaml: |
+    overrides:
+  tempo.yaml: |
+    auth_enabled: false
+    compactor:
+        compaction:
+            compacted_block_retention: 24h
+    distributor:
+        receivers:
+            jaeger:
+                protocols:
+                    thrift_compact:
+                        endpoint: 0.0.0.0:6831
+            otlp:
+                protocols:
+                    grpc:
+                        endpoint: 0.0.0.0:55680
+    ingester: {}
+    server:
+        http_listen_port: 3200
+    storage:
+        trace:
+            backend: local
+            blocklist_poll: 30s
+            local:
+                path: /tmp/tempo/traces
+            wal:
+                path: /var/tempo/wal
+kind: ConfigMap
+metadata:
+  name: tempo
+  namespace: kcdsp
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    name: tempo
+  name: tempo
+  namespace: kcdsp
+spec:
+  ports:
+  - name: tempo-prom-metrics
+    port: 3200
+    targetPort: 3200
+  - name: tempo-otlp
+    port: 55680
+    protocol: TCP
+    targetPort: 55680
+  - name: http
+    port: 80
+    targetPort: 3200
+  - name: receiver
+    port: 6831
+    protocol: UDP
+    targetPort: 6831
+  selector:
+    app: tempo
+    name: tempo
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tempo
+  namespace: kcdsp
+spec:
+  minReadySeconds: 10
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: tempo
+      name: tempo
+  strategy:
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  template:
+    metadata:
+      annotations:
+        config_hash: 7f4b5fad0e6364b6a2a5ea380281cb0e
+      labels:
+        app: tempo
+        name: tempo
+    spec:
+      containers:
+      - args:
+        - -config.file=/conf/tempo.yaml
+        - -mem-ballast-size-mbs=1024
+        env:
+        - name: JAEGER_AGENT_PORT
+          value: ""
+        image: grafana/tempo:main-e6394c3
+        imagePullPolicy: IfNotPresent
+        name: tempo
+        ports:
+        - containerPort: 3200
+          name: prom-metrics
+        - containerPort: 55680
+          name: otlp
+          protocol: TCP
+        volumeMounts:
+        - mountPath: /conf
+          name: tempo-conf
+      volumes:
+      - configMap:
+          name: tempo
+        name: tempo-conf
+---
+apiVersion: v1
+data:
+  demo-overview-.json: '{}'
+kind: ConfigMap
+metadata:
+  labels: {}
+  name: dashboards-demo-0
+  namespace: kcdsp
+---
+apiVersion: v1
+data:
+  grafana.ini: |
+    [analytics]
+    reporting_enabled = false
+    [auth.anonymous]
+    enabled = true
+    org_role = Admin
+    [feature_toggles]
+    enable = traceToLogs
+    [log.frontend]
+    enabled = true
+    [server]
+    http_port = 3000
+    root_url = http://localhost:3000/grafana
+    serve_from_sub_path = true
+    router_logging = true
+    [users]
+    default_theme = light
+kind: ConfigMap
+metadata:
+  name: grafana-config
+  namespace: kcdsp
+---
+apiVersion: v1
+data:
+  datasources.yml: |
+    apiVersion: 1
+    datasources:
+        - access: browser
+          basicAuth: false
+          editable: false
+          isDefault: false
+          jsonData:
+            tracesToLogs:
+                datasourceUid: Loki
+                tags:
+                    - job
+                    - instance
+                    - pod
+                    - namespace
+          name: Traces
+          type: tempo
+          uid: tempo
+          url: http://tempo.kcdsp.svc.cluster.local/
+          version: 1
+kind: ConfigMap
+metadata:
+  labels: {}
+  name: grafana-datasources
+  namespace: kcdsp
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  labels: {}
+  name: grafana-notification-channels
+  namespace: kcdsp
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    name: grafana
+  name: grafana
+  namespace: kcdsp
+spec:
+  ports:
+  - name: grafana-grafana-metrics
+    port: 3000
+    targetPort: 3000
+  - name: http
+    port: 80
+    targetPort: 3000
+  selector:
+    name: grafana
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: kcdsp
+spec:
+  minReadySeconds: 10
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      name: grafana
+  template:
+    metadata:
+      labels:
+        name: grafana
+    spec:
+      containers:
+      - env:
+        - name: GF_INSTALL_PLUGINS
+        - name: GF_PATHS_CONFIG
+          value: /etc/grafana-config/grafana.ini
+        image: grafana/grafana:9.2.3
+        imagePullPolicy: IfNotPresent
+        name: grafana
+        ports:
+        - containerPort: 3000
+          name: grafana-metrics
+        resources:
+          requests:
+            cpu: 10m
+            memory: 40Mi
+        volumeMounts:
+        - mountPath: /etc/grafana-config
+          name: grafana-config
+        - mountPath: /etc/grafana/provisioning/datasources
+          name: grafana-datasources
+        - mountPath: /etc/grafana/provisioning/notifiers
+          name: grafana-notification-channels
+      volumes:
+      - configMap:
+          name: grafana-config
+        name: grafana-config
+      - configMap:
+          name: grafana-datasources
+        name: grafana-datasources
+      - configMap:
+          name: grafana-notification-channels
+        name: grafana-notification-channels
